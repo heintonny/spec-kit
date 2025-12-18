@@ -75,9 +75,11 @@ AMP_FILE="$REPO_ROOT/AGENTS.md"
 SHAI_FILE="$REPO_ROOT/SHAI.md"
 Q_FILE="$REPO_ROOT/AGENTS.md"
 BOB_FILE="$REPO_ROOT/AGENTS.md"
+ANTIGRAVITY_FILE="$REPO_ROOT/.antigravity/prompts/antigravity.md"
 
 # Template file
 TEMPLATE_FILE="$REPO_ROOT/.specify/templates/agent-file-template.md"
+ANTIGRAVITY_TEMPLATE_FILE="$REPO_ROOT/.specify/templates/antigravity-template.md"
 
 # Global variables for parsed plan data
 NEW_LANG=""
@@ -272,20 +274,28 @@ create_new_agent_file() {
     local temp_file="$2"
     local project_name="$3"
     local current_date="$4"
+    local use_template="$TEMPLATE_FILE"
+
+    # Use specific template for Antigravity if available
+    if [[ "$target_file" == *".antigravity"* ]]; then
+        if [[ -f "$ANTIGRAVITY_TEMPLATE_FILE" ]]; then
+            use_template="$ANTIGRAVITY_TEMPLATE_FILE"
+        fi
+    fi
     
-    if [[ ! -f "$TEMPLATE_FILE" ]]; then
-        log_error "Template not found at $TEMPLATE_FILE"
+    if [[ ! -f "$use_template" ]]; then
+        log_error "Template not found at $use_template"
         return 1
     fi
     
-    if [[ ! -r "$TEMPLATE_FILE" ]]; then
-        log_error "Template file is not readable: $TEMPLATE_FILE"
+    if [[ ! -r "$use_template" ]]; then
+        log_error "Template file is not readable: $use_template"
         return 1
     fi
     
-    log_info "Creating new agent context file from template..."
+    log_info "Creating new agent context file from $(basename "$use_template")..."
     
-    if ! cp "$TEMPLATE_FILE" "$temp_file"; then
+    if ! cp "$use_template" "$temp_file"; then
         log_error "Failed to copy template file"
         return 1
     fi
@@ -633,6 +643,9 @@ update_specific_agent() {
         bob)
             update_agent_file "$BOB_FILE" "IBM Bob"
             ;;
+        antigravity)
+            update_agent_file "$ANTIGRAVITY_FILE" "Google Antigravity"
+            ;;
         *)
             log_error "Unknown agent type '$agent_type'"
             log_error "Expected: claude|gemini|copilot|cursor-agent|qwen|opencode|codex|windsurf|kilocode|auggie|roo|amp|shai|q|bob|qoder"
@@ -719,6 +732,11 @@ update_all_existing_agents() {
         update_agent_file "$BOB_FILE" "IBM Bob"
         found_agent=true
     fi
+
+    if [[ -f "$ANTIGRAVITY_FILE" ]]; then
+        update_agent_file "$ANTIGRAVITY_FILE" "Google Antigravity"
+        found_agent=true
+    fi
     
     # If no agent files exist, create a default Claude file
     if [[ "$found_agent" == false ]]; then
@@ -744,7 +762,7 @@ print_summary() {
     
     echo
 
-    log_info "Usage: $0 [claude|gemini|copilot|cursor-agent|qwen|opencode|codex|windsurf|kilocode|auggie|codebuddy|shai|q|bob|qoder]"
+    log_info "Usage: $0 [claude|gemini|copilot|cursor-agent|qwen|opencode|codex|windsurf|kilocode|auggie|codebuddy|shai|q|bob|antigravity|qoder]"
 }
 
 #==============================================================================
