@@ -640,66 +640,97 @@ def merge_json_files(existing_path: Path, new_content: dict, verbose: bool = Fal
 
     return merged
 
-def download_template_from_github(ai_assistant: str, download_dir: Path, *, script_type: str = "sh", verbose: bool = True, show_progress: bool = True, client: httpx.Client = None, debug: bool = False, github_token: str = None) -> Tuple[Path, dict]:
-    repo_owner = "github"
-    repo_name = "spec-kit"
+def download_template_from_github(ai_assistant: str, download_dir: Path, *, script_type: str = "sh", verbose: bool = True, show_progress: bool = True, client: httpx.Client = None, debug: bool = False, github_token: str = None, repo: str = "github/spec-kit", branch: str = None) -> Tuple[Path, dict]:
+    repo_owner, repo_name = repo.split("/")
     if client is None:
         client = httpx.Client(verify=ssl_context)
 
-    if verbose:
-        console.print("[cyan]Fetching latest release information...[/cyan]")
-    api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/latest"
+    if branch:
+        if verbose:
+            console.print(f"[cyan]Targeting branch/ref:[/cyan] {branch}")
+        
+        # Download source zip for branch
+        download_url = f"https://github.com/{repo_owner}/{repo_name}/archive/refs/heads/{branch}.zip"
+        # Fallback to general ref if not heads
+        # But for 'specify init' mainly used for branches
+        
+        filename = f"{repo_name}-{branch}.zip"
+        file_size = 0 # Unknown upfront
+        release_tag = branch
+        
+        if verbose:
+             console.print(f"[cyan]Downloading source from branch...[/cyan]")
+             
+    else:
+        # Release based download
+        if verbose:
+            console.print("[cyan]Fetching latest release information...[/cyan]")
+        api_url = f"https://api.github.com/repos/{repo_owner}/{repo_name}/releases/latest"
 
-    try:
-        response = client.get(
-            api_url,
-            timeout=30,
-            follow_redirects=True,
-            headers=_github_auth_headers(github_token),
-        )
-        status = response.status_code
-        if status != 200:
-            # Format detailed error message with rate-limit info
-            error_msg = _format_rate_limit_error(status, response.headers, api_url)
-            if debug:
-                error_msg += f"\n\n[dim]Response body (truncated 500):[/dim]\n{response.text[:500]}"
-            raise RuntimeError(error_msg)
         try:
-            release_data = response.json()
-        except ValueError as je:
-            raise RuntimeError(f"Failed to parse release JSON: {je}\nRaw (truncated 400): {response.text[:400]}")
-    except Exception as e:
-        console.print(f"[red]Error fetching release information[/red]")
-        console.print(Panel(str(e), title="Fetch Error", border_style="red"))
-        raise typer.Exit(1)
+            response = client.get(
+                api_url,
+                timeout=30,
+                follow_redirects=True,
+                headers=_github_auth_headers(github_token),
+            )
+            status = response.status_code
+            if status != 200:
+                # Format detailed error message with rate-limit info
+                error_msg = _format_rate_limit_error(status, response.headers, api_url)
+                if debug:
+                    error_msg += f"\n\n[dim]Response body (truncated 500):[/dim]\n{response.text[:500]}"
+                raise RuntimeError(error_msg)
+            try:
+                release_data = response.json()
+            except ValueError as je:
+                raise RuntimeError(f"Failed to parse release JSON: {je}\nRaw (truncated 400): {response.text[:400]}")
+        except Exception as e:
+            console.print(f"[red]Error fetching release information[/red]")
+            console.print(Panel(str(e), title="Fetch Error", border_style="red"))
+            raise typer.Exit(1)
 
-    assets = release_data.get("assets", [])
-    pattern = f"spec-kit-template-{ai_assistant}-{script_type}"
-    matching_assets = [
-        asset for asset in assets
-        if pattern in asset["name"] and asset["name"].endswith(".zip")
-    ]
+        assets = release_data.get("assets", [])
+        pattern = f"spec-kit-template-{ai_assistant}-{script_type}"
+        matching_assets = [
+            asset for asset in assets
+            if pattern in asset["name"] and asset["name"].endswith(".zip")
+        ]
 
-    asset = matching_assets[0] if matching_assets else None
+        asset = matching_assets[0] if matching_assets else None
 
-    if asset is None:
-        console.print(f"[red]No matching release asset found[/red] for [bold]{ai_assistant}[/bold] (expected pattern: [bold]{pattern}[/bold])")
-        asset_names = [a.get('name', '?') for a in assets]
-        console.print(Panel("\n".join(asset_names) or "(no assets)", title="Available Assets", border_style="yellow"))
-        raise typer.Exit(1)
+        if asset is None:
+            console.print(f"[red]No matching release asset found[/red] for [bold]{ai_assistant}[/bold] (expected pattern: [bold]{pattern}[/bold])")
+            asset_names = [a.get('name', '?') for a in assets]
+            console.print(Panel("\n".join(asset_names) or "(no assets)", title="Available Assets", border_style="yellow"))
+            raise typer.Exit(1)
 
-    download_url = asset["browser_download_url"]
-    filename = asset["name"]
-    file_size = asset["size"]
+        download_url = asset["browser_download_url"]
+        filename = asset["name"]
+        file_size = asset["size"]
+        release_tag = release_data['tag_name']
 
-    if verbose:
-        console.print(f"[cyan]Found template:[/cyan] {filename}")
-        console.print(f"[cyan]Size:[/cyan] {file_size:,} bytes")
-        console.print(f"[cyan]Release:[/cyan] {release_data['tag_name']}")
+        if verbose:
+            console.print(f"[cyan]Found template:[/cyan] {filename}")
+            console.print(f"[cyan]Size:[/cyan] {file_size:,} bytes")
+            console.print(f"[cyan]Release:[/cyan] {release_tag}")
 
     zip_path = download_dir / filename
-    if verbose:
+    if verbose and not branch:
         console.print(f"[cyan]Downloading template...[/cyan]")
+        # If branch is provided but repo is not, assume current spec-kit default
+    if branch and not repo:
+        repo = "github/spec-kit"
+
+    if debug:
+        console.print(f"[dim]Debug mode enabled[/dim]")
+        if skip_tls:
+             console.print(f"[red]Warning: SSL/TLS verification disabled[/red]")
+
+    # Check for required tools
+    if verbose:
+        console.print("[cyan]Checking system requirements...[/cyan]")
+
 
     try:
         with client.stream(
@@ -749,12 +780,12 @@ def download_template_from_github(ai_assistant: str, download_dir: Path, *, scri
     metadata = {
         "filename": filename,
         "size": file_size,
-        "release": release_data["tag_name"],
+        "release": release_tag,
         "asset_url": download_url
     }
     return zip_path, metadata
 
-def download_and_extract_template(project_path: Path, ai_assistant: str, script_type: str, is_current_dir: bool = False, *, verbose: bool = True, tracker: StepTracker | None = None, client: httpx.Client = None, debug: bool = False, github_token: str = None) -> Path:
+def download_and_extract_template(project_path: Path, ai_assistant: str, script_type: str, is_current_dir: bool = False, *, verbose: bool = True, tracker: StepTracker | None = None, client: httpx.Client = None, debug: bool = False, github_token: str = None, repo: str = "github/spec-kit", branch: str = None) -> Path:
     """Download the latest release and extract it to create a new project.
     Returns project_path. Uses tracker if provided (with keys: fetch, download, extract, cleanup)
     """
@@ -771,7 +802,10 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
             show_progress=(tracker is None),
             client=client,
             debug=debug,
-            github_token=github_token
+            github_token=github_token,
+            repo=repo,
+            branch=branch
+        )
         )
         if tracker:
             tracker.complete("fetch", f"release {meta['release']} ({meta['size']:,} bytes)")
@@ -822,14 +856,27 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
                             tracker.add("flatten", "Flatten nested directory")
                             tracker.complete("flatten")
                         elif verbose:
-                            console.print(f"[cyan]Found nested directory structure[/cyan]")
+                             console.print(f"[cyan]Found nested directory structure[/cyan]")
 
                     for item in source_dir.iterdir():
-                        dest_path = project_path / item.name
+                        # Path remapping for source downloads (branch zip)
+                        # Maps: memory/ -> .specify/memory/
+                        #       scripts/ -> .specify/scripts/
+                        #       templates/ -> .specify/templates/
+                        dest_rel_path = item.name
+                        if branch:
+                             if item.name in ["memory", "scripts", "templates"]:
+                                  dest_rel_path = f".specify/{item.name}"
+                             elif item.name == ".specify":
+                                  # If source already has .specify (unlikely in raw root), keep it
+                                  pass
+
+                        dest_path = project_path / dest_rel_path
+                        
                         if item.is_dir():
                             if dest_path.exists():
                                 if verbose and not tracker:
-                                    console.print(f"[yellow]Merging directory:[/yellow] {item.name}")
+                                    console.print(f"[yellow]Merging directory:[/yellow] {dest_rel_path}")
                                 for sub_item in item.rglob('*'):
                                     if sub_item.is_file():
                                         rel_path = sub_item.relative_to(item)
@@ -839,12 +886,15 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
                                         if dest_file.name == "settings.json" and dest_file.parent.name == ".vscode":
                                             handle_vscode_settings(sub_item, dest_file, rel_path, verbose, tracker)
                                         else:
+                                            # Ensure parent dir exists for remapped paths
                                             shutil.copy2(sub_item, dest_file)
                             else:
+                                dest_path.parent.mkdir(parents=True, exist_ok=True)
                                 shutil.copytree(item, dest_path)
                         else:
                             if dest_path.exists() and verbose and not tracker:
-                                console.print(f"[yellow]Overwriting file:[/yellow] {item.name}")
+                                console.print(f"[yellow]Overwriting file:[/yellow] {dest_rel_path}")
+                            dest_path.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(item, dest_path)
                     if verbose and not tracker:
                         console.print(f"[cyan]Template files merged into current directory[/cyan]")
@@ -960,6 +1010,8 @@ def init(
     skip_tls: bool = typer.Option(False, "--skip-tls", help="Skip SSL/TLS verification (not recommended)"),
     debug: bool = typer.Option(False, "--debug", help="Show verbose diagnostic output for network and extraction failures"),
     github_token: str = typer.Option(None, "--github-token", help="GitHub token to use for API requests (or set GH_TOKEN or GITHUB_TOKEN environment variable)"),
+    repo: str = typer.Option(None, "--repo", help="GitHub repository to download template from (format: owner/name). Default: github/spec-kit"),
+    branch: str = typer.Option(None, "--branch", help="Specific branch/ref to download from. If set, downloads source zip instead of release asset."),
 ):
     """
     Initialize a new Specify project from the latest template.
@@ -1130,7 +1182,7 @@ def init(
             local_ssl_context = ssl_context if verify else False
             local_client = httpx.Client(verify=local_ssl_context)
 
-            download_and_extract_template(project_path, selected_ai, selected_script, here, verbose=False, tracker=tracker, client=local_client, debug=debug, github_token=github_token)
+            download_and_extract_template(project_path, selected_ai, selected_script, here, verbose=False, tracker=tracker, client=local_client, debug=debug, github_token=github_token, repo=repo, branch=branch)
 
             ensure_executable_scripts(project_path, tracker=tracker)
 
