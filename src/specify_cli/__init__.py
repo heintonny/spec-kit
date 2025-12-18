@@ -806,7 +806,6 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
             repo=repo,
             branch=branch
         )
-        )
         if tracker:
             tracker.complete("fetch", f"release {meta['release']} ({meta['size']:,} bytes)")
             tracker.add("download", "Download template")
