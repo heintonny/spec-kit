@@ -641,6 +641,8 @@ def merge_json_files(existing_path: Path, new_content: dict, verbose: bool = Fal
     return merged
 
 def download_template_from_github(ai_assistant: str, download_dir: Path, *, script_type: str = "sh", verbose: bool = True, show_progress: bool = True, client: httpx.Client = None, debug: bool = False, github_token: str = None, repo: str = "github/spec-kit", branch: str = None) -> Tuple[Path, dict]:
+    if repo is None:
+        repo = "github/spec-kit"
     repo_owner, repo_name = repo.split("/")
     if client is None:
         client = httpx.Client(verify=ssl_context)
@@ -654,7 +656,7 @@ def download_template_from_github(ai_assistant: str, download_dir: Path, *, scri
         # Fallback to general ref if not heads
         # But for 'specify init' mainly used for branches
         
-        filename = f"{repo_name}-{branch}.zip"
+        filename = f"{repo_name}-{branch.replace('/', '-')}.zip"
         file_size = 0 # Unknown upfront
         release_tag = branch
         
@@ -836,7 +838,67 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
             elif verbose:
                 console.print(f"[cyan]ZIP contains {len(zip_contents)} items[/cyan]")
 
-            if is_current_dir:
+            # Strategy:
+            # 1. If 'branch' is set (Source Zip), we MUST filter and remap paths.
+            #    We extract to temp, then copy allowlisted items to project_path.
+            # 2. If 'branch' is NOT set (Release Zip), it is pre-structured.
+            #    We can extract directly (or via temp for current_dir safety).
+
+            if branch:
+                # Source Zip Mode: Filter and Remap
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
+                    zip_ref.extractall(temp_path)
+                    
+                    # Source zips always have a top-level folder (e.g. repo-main/)
+                    source_dir = temp_path
+                    extracted_items = list(temp_path.iterdir())
+                    if len(extracted_items) == 1 and extracted_items[0].is_dir():
+                        source_dir = extracted_items[0]
+                    
+                    # Define extraction rules
+                    # Items to copy to root
+                    root_allowlist = ["README.md", "spec-driven.md", ".gitignore", "LICENSE", "media"]
+                    # Items to remap to .specify/
+                    remap_allowlist = ["memory", "scripts", "templates"]
+                    
+                    if tracker:
+                        tracker.start("extracted-summary")
+                        tracker.complete("extracted-summary", f"source zip processing")
+
+                    merged_count = 0
+                    
+                    for item in source_dir.iterdir():
+                        dest_path = None
+                        
+                        if item.name in root_allowlist:
+                            dest_path = project_path / item.name
+                        elif item.name in remap_allowlist:
+                            dest_path = project_path / ".specify" / item.name
+                        
+                        if dest_path:
+                            # Create destination directory if needed
+                            dest_path.parent.mkdir(parents=True, exist_ok=True)
+                            
+                            if item.is_dir():
+                                if dest_path.exists():
+                                    # Merge directory
+                                    for sub_item in item.rglob('*'):
+                                        if sub_item.is_file():
+                                            rel_path = sub_item.relative_to(item)
+                                            dest_file = dest_path / rel_path
+                                            dest_file.parent.mkdir(parents=True, exist_ok=True)
+                                            shutil.copy2(sub_item, dest_file)
+                                else:
+                                    shutil.copytree(item, dest_path)
+                            else:
+                                shutil.copy2(item, dest_path)
+                            merged_count += 1
+                            
+                    if verbose:
+                        console.print(f"[cyan]Processed {merged_count} root items from source zip[/cyan]")
+
+            elif is_current_dir:
                 with tempfile.TemporaryDirectory() as temp_dir:
                     temp_path = Path(temp_dir)
                     zip_ref.extractall(temp_path)
@@ -858,24 +920,11 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
                              console.print(f"[cyan]Found nested directory structure[/cyan]")
 
                     for item in source_dir.iterdir():
-                        # Path remapping for source downloads (branch zip)
-                        # Maps: memory/ -> .specify/memory/
-                        #       scripts/ -> .specify/scripts/
-                        #       templates/ -> .specify/templates/
-                        dest_rel_path = item.name
-                        if branch:
-                             if item.name in ["memory", "scripts", "templates"]:
-                                  dest_rel_path = f".specify/{item.name}"
-                             elif item.name == ".specify":
-                                  # If source already has .specify (unlikely in raw root), keep it
-                                  pass
-
-                        dest_path = project_path / dest_rel_path
-                        
+                        dest_path = project_path / item.name
                         if item.is_dir():
                             if dest_path.exists():
                                 if verbose and not tracker:
-                                    console.print(f"[yellow]Merging directory:[/yellow] {dest_rel_path}")
+                                    console.print(f"[yellow]Merging directory:[/yellow] {item.name}")
                                 for sub_item in item.rglob('*'):
                                     if sub_item.is_file():
                                         rel_path = sub_item.relative_to(item)
@@ -892,7 +941,7 @@ def download_and_extract_template(project_path: Path, ai_assistant: str, script_
                                 shutil.copytree(item, dest_path)
                         else:
                             if dest_path.exists() and verbose and not tracker:
-                                console.print(f"[yellow]Overwriting file:[/yellow] {dest_rel_path}")
+                                console.print(f"[yellow]Overwriting file:[/yellow] {item.name}")
                             dest_path.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(item, dest_path)
                     if verbose and not tracker:
